@@ -83,7 +83,7 @@ object PcKey {
 object CommandAuth {
     data class Command(val ts: Long, val host: String, val stage: String)
 
-    private val STAGES = setOf("user", "pass", "both")
+    private val STAGES = setOf("user", "pass", "both", "approach", "locked", "unlocked")
 
     fun verify(context: Context, raw: String, lastTs: Long): Command? {
         val parts = raw.trim().split('|')

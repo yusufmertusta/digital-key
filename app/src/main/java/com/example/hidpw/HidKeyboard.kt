@@ -162,16 +162,70 @@ class HidKeyboard(
         val h = hid
         val d = host
         if (h == null || d == null) return false
+        val layout = AppSettings.layout(context)
+        val dead = AppSettings.deadSpace(context)
+        senderExecutor.execute { typeChars(h, d, text, layout, dead) }
+        return true
+    }
+
+    /**
+     * Kilit ekranı için: önce uyandırma tuşu, bekleme, sonra PIN (ve isteğe bağlı Enter).
+     * wake: shift, ctrl, esc, space, none.
+     */
+    fun unlockSequence(pin: String, enter: Boolean, wake: String, wakeDelayMs: Long): Boolean {
+        val h = hid
+        val d = host
+        if (h == null || d == null) return false
+        val layout = AppSettings.layout(context)
+        val dead = AppSettings.deadSpace(context)
         senderExecutor.execute {
-            for (ch in text) {
-                val k = KeyMapper.map(ch) ?: continue
-                h.sendReport(d, REPORT_ID, report(k.first, k.second))
-                Thread.sleep(keyDelayMs)
-                h.sendReport(d, REPORT_ID, report(0, 0))
-                Thread.sleep(keyDelayMs)
+            when (wake) {
+                "shift" -> tap(h, d, 0x02, 0)
+                "ctrl" -> tap(h, d, 0x01, 0)
+                "esc" -> tap(h, d, 0, 0x29)
+                "space" -> tap(h, d, 0, 0x2C)
+                else -> {}
             }
+            if (wake != "none") Thread.sleep(wakeDelayMs)
+            typeChars(h, d, pin, layout, dead)
+            if (enter) tap(h, d, 0, 0x28)
         }
         return true
+    }
+
+    private fun typeChars(
+        h: BluetoothHidDevice,
+        d: BluetoothDevice,
+        text: String,
+        layout: KeyMapper.Layout,
+        deadSpace: Boolean
+    ) {
+        for (ch in text) {
+            val k = KeyMapper.map(ch, layout) ?: continue
+            tap(h, d, k.first, k.second)
+            if (deadSpace && layout == KeyMapper.Layout.TR && ch in KeyMapper.DEAD_CHARS) {
+                tap(h, d, 0, 0x2C)
+            }
+        }
+    }
+
+    private fun tap(h: BluetoothHidDevice, d: BluetoothDevice, mod: Int, key: Int) {
+        if ((mod and KeyMapper.ALTGR) != 0) {
+            // AltGr için önce değiştirici, sonra tuş: bazı sistemler aynı raporda kaçırır.
+            h.sendReport(d, REPORT_ID, report(mod, 0))
+            Thread.sleep(keyDelayMs)
+            h.sendReport(d, REPORT_ID, report(mod, key))
+            Thread.sleep(keyDelayMs)
+            h.sendReport(d, REPORT_ID, report(mod, 0))
+            Thread.sleep(keyDelayMs)
+            h.sendReport(d, REPORT_ID, report(0, 0))
+            Thread.sleep(keyDelayMs)
+        } else {
+            h.sendReport(d, REPORT_ID, report(mod, key))
+            Thread.sleep(keyDelayMs)
+            h.sendReport(d, REPORT_ID, report(0, 0))
+            Thread.sleep(keyDelayMs)
+        }
     }
 
     private fun report(modifier: Int, key: Int) =

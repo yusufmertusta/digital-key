@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Telefon Giriş (prototip)",
+  "version": "0.1",
+  "description": "Giriş sayfalarını algılayıp site adını bilgisayar ajanına bildirir.",
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

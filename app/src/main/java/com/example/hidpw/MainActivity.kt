@@ -7,9 +7,14 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PersistableBundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
@@ -17,6 +22,8 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -127,6 +134,48 @@ class MainActivity : AppCompatActivity() {
         root.addView(btn("1) Telefonu görünür yap (ilk eşleştirme)") { makeDiscoverable() })
         root.addView(btn("2) Eşleşmiş bilgisayara bağlan") { pickHost() })
         root.addView(svcCheck)
+
+        root.addView(section("Windows oturum açma (PIN)"))
+        root.addView(btn("Windows PIN kaydet / değiştir") { showPinDialog() })
+        root.addView(btn("Popup izni: diğer uygulamaların üzerinde göster") { openOverlaySettings() })
+        root.addView(btn("Pil kısıtlamasını kaldır") { openBatterySettings() })
+
+        root.addView(section("Klavye"))
+        val rg = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val rbTr = RadioButton(this).apply { text = "Türkçe Q"; id = 101 }
+        val rbUs = RadioButton(this).apply { text = "ABD (US)"; id = 102 }
+        rg.addView(rbTr)
+        rg.addView(rbUs)
+        rg.check(if (AppSettings.layout(this) == KeyMapper.Layout.TR) 101 else 102)
+        rg.setOnCheckedChangeListener { _, checked ->
+            AppSettings.setLayout(
+                this,
+                if (checked == 101) KeyMapper.Layout.TR else KeyMapper.Layout.US
+            )
+        }
+        root.addView(rg)
+        root.addView(CheckBox(this).apply {
+            text = "^ ve ~ sonrası Boşluk gönder (Türkçe Q ölü tuş)"
+            isChecked = AppSettings.deadSpace(this@MainActivity)
+            setOnCheckedChangeListener { _, on -> AppSettings.setDeadSpace(this@MainActivity, on) }
+        })
+        root.addView(btn("Klavye testi (5 sn sonra bilgisayara yazar)") { keyboardTest() })
+
+        root.addView(section("Kilit hassasiyeti"))
+        root.addView(CheckBox(this).apply {
+            text = "Hareket algısı (daha hızlı kilit, pil harcar)"
+            isChecked = AppSettings.motion(this@MainActivity)
+            setOnCheckedChangeListener { _, on ->
+                AppSettings.setMotion(this@MainActivity, on)
+                if (app.hasBluetoothPermission() && ui.getBoolean("svc", true)) {
+                    PcLinkService.refresh(this@MainActivity)
+                }
+            }
+        })
+        lateinit var wakeBtn: Button
+        wakeBtn = btn("Kilit ekranı uyandırma tuşu: ${wakeLabel()}") { pickWakeKey(wakeBtn) }
+        root.addView(wakeBtn)
+
         root.addView(section("Kayıtlı siteler"))
         root.addView(listBox)
         root.addView(btn("+ Kayıt ekle") { showAddDialog() })
@@ -162,7 +211,8 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER_VERTICAL
             }
             val tv = TextView(this).apply {
-                text = "${e.label}  (${e.host})"
+                text = if (e.host == PcLinkService.WINDOWS_HOST) "${e.label}  (Windows oturum açma)"
+                else "${e.label}  (${e.host})"
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
             val del = btn("Sil") {
@@ -180,6 +230,117 @@ class MainActivity : AppCompatActivity() {
             row.addView(del)
             listBox.addView(row)
         }
+    }
+
+    // ---------- Ayarlar, PIN, test ----------
+
+    private fun wakeLabel(): String = when (AppSettings.wakeKey(this)) {
+        "shift" -> "Shift"
+        "ctrl" -> "Ctrl"
+        "esc" -> "Esc"
+        "space" -> "Boşluk"
+        else -> "yok"
+    }
+
+    private fun pickWakeKey(b: Button) {
+        val keys = arrayOf("shift", "ctrl", "esc", "space", "none")
+        val names = arrayOf("Shift", "Ctrl", "Esc", "Boşluk", "Hiçbiri")
+        AlertDialog.Builder(this)
+            .setTitle("Kilit ekranını uyandıran tuş")
+            .setItems(names) { _, which ->
+                AppSettings.setWakeKey(this, keys[which])
+                b.text = "Kilit ekranı uyandırma tuşu: ${wakeLabel()}"
+            }
+            .show()
+    }
+
+    private fun keyboardTest() {
+        val layout = AppSettings.layout(this)
+        val sample = "ığüşöçİĞÜŞÖÇ 1234567890 !'^+%&/()=?_-*,;:.<>|@€₺#\${[]}\\\"~"
+        if (!app.hid.isConnected) {
+            status.text = "Bilgisayara klavye olarak bağlı değil"
+            return
+        }
+        status.text = "5 sn içinde bilgisayarda Not Defteri'ni aç ve imleci içine koy..."
+        Handler(Looper.getMainLooper()).postDelayed({
+            app.hid.typeText(sample)
+            val miss = KeyMapper.unsupported(sample, layout)
+            status.text = "Test yazıldı. Bilgisayardaki çıktıyı karşılaştır." +
+                (if (miss.isNotEmpty()) " (Bu düzende yazılamayan: ${miss.joinToString(" ")})" else "")
+        }, 5000L)
+    }
+
+    private fun openOverlaySettings() {
+        if (Settings.canDrawOverlays(this)) {
+            status.text = "Popup izni zaten verilmiş"
+            return
+        }
+        startActivity(
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+        )
+    }
+
+    private fun openBatterySettings() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            status.text = "Pil kısıtlaması zaten kaldırılmış"
+            return
+        }
+        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+    }
+
+    private fun showPinDialog() {
+        val pad = dp(20)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, dp(8), pad, 0)
+        }
+        val pin = EditText(this).apply {
+            hint = "Windows PIN"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val enter = CheckBox(this).apply {
+            text = "PIN'den sonra Enter bas (genelde gerekmez)"
+            isChecked = false
+        }
+        box.addView(pin)
+        box.addView(enter)
+        AlertDialog.Builder(this)
+            .setTitle("Windows PIN")
+            .setMessage("PIN telefonda parmak izine bağlı şifreli saklanır.")
+            .setView(box)
+            .setPositiveButton("Kaydet") { _, _ ->
+                val p = pin.text.toString()
+                if (p.isEmpty()) {
+                    status.text = "PIN boş"
+                    return@setPositiveButton
+                }
+                val miss = KeyMapper.unsupported(p, AppSettings.layout(this))
+                if (miss.isNotEmpty()) {
+                    status.text = "PIN'deki bu karakterler yazılamaz: ${miss.joinToString(" ")}"
+                    return@setPositiveButton
+                }
+                val cipher = try {
+                    CredentialStore.encryptCipher()
+                } catch (e: Exception) {
+                    status.text = "Anahtar hazırlanamadı: ${e.message}"
+                    return@setPositiveButton
+                }
+                authenticateCipher(cipher, "PIN'i kaydetmek için doğrula") { c ->
+                    try {
+                        CredentialStore.add(
+                            this, c, "Windows PIN", PcLinkService.WINDOWS_HOST,
+                            enter.isChecked, "", p
+                        )
+                        status.text = "Windows PIN kaydedildi"
+                        refreshList()
+                    } catch (e: Exception) {
+                        status.text = "Kaydedilemedi: ${e.message}"
+                    }
+                }
+            }
+            .setNegativeButton("İptal", null)
+            .show()
     }
 
     // ---------- Bluetooth ----------
@@ -263,6 +424,11 @@ class MainActivity : AppCompatActivity() {
         }
         if (pass.isEmpty()) {
             status.text = "Şifre boş"
+            return
+        }
+        val miss = KeyMapper.unsupported(user + pass, AppSettings.layout(this))
+        if (miss.isNotEmpty()) {
+            status.text = "Bu karakterler seçili klavye düzeninde yazılamaz: ${miss.joinToString(" ")}"
             return
         }
         val name = label.trim().ifEmpty { host }
